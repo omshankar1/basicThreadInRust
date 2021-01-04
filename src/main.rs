@@ -44,7 +44,7 @@ impl Threadpool {
     }
 
     // static because the lifetime of vairable passed in the function
-    // lives as long as the variable in the pub fn main()
+    // should live as long as the variable decalred in the main thread
     //  In this case the atomic vairable that is passed is cloned and moved to
 
     pub fn execute<F: FnOnce() + Send + 'static>(&self, work: F) {
