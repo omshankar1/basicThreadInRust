@@ -2,12 +2,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread::JoinHandle;
-use std::time;
+// use std::thread::JoinHandle;
+// use std::time;
 
 pub struct Threadpool {
     _handle: Vec<std::thread::JoinHandle<()>>,
-    sender: Sender<Box<dyn FnOnce() + Send>>,
+    sender: Sender<Box<dyn FnOnce() -> bool + Send>>,
 }
 
 impl Threadpool {
@@ -18,7 +18,7 @@ impl Threadpool {
         // Box -> to satisfy compiler because it can't figure out the size of FnOnce that we pass in
         // Send -> so that recv and send implements 'send' meaning it can be send to multiple
         // threads
-        let (send, recv) = channel::<Box<dyn FnOnce() + Send>>();
+        let (send, recv) = channel::<Box<dyn FnOnce() -> bool + Send>>();
         let recv = Arc::new(Mutex::new(recv));
         let mut handle: Vec<std::thread::JoinHandle<()>> = Vec::new();
         for _ in 0..num_threads {
@@ -31,9 +31,10 @@ impl Threadpool {
                         break;
                     }
                 };
-                println!("Starting on task");
-                work();
-                println!("Finished executing the task");
+                let result = work();
+                if result {
+                    break;
+                };
             });
             handle.push(_handle);
         }
@@ -47,8 +48,24 @@ impl Threadpool {
     // should live as long as the variable decalred in the main thread
     //  In this case the atomic vairable that is passed is cloned and moved to
 
-    pub fn execute<F: FnOnce() + Send + 'static>(&self, work: F) {
+    pub fn execute<F: FnOnce() -> bool + Send + 'static>(&self, work: F) {
         self.sender.send(Box::new(work)).unwrap();
+    }
+    pub fn shutdown(self) {
+        // send shutdown bool as a worker
+        // this would enable each thread to break out of its
+        // infinite loop
+        let shutdown = move || {
+            let shutdown = true;
+            println!("Shutting down");
+            shutdown
+        };
+        for _ in self._handle.iter() {
+            self.execute(shutdown);
+        }
+        for handle in self._handle.into_iter() {
+            handle.join().unwrap();
+        }
     }
 }
 
@@ -61,15 +78,24 @@ fn main() {
     let work = move || {
         nref.fetch_add(1, Ordering::SeqCst);
         println!("thread 1: {:?}", nref.load(Ordering::Relaxed));
+        false
     };
-    pool.execute(work.clone());
+    let _ = move || {
+        // println!("Shutting down");
+        true
+    };
+    let _: () = pool.execute(work.clone());
     pool.execute(work.clone());
     pool.execute(work.clone());
     pool.execute(work);
     nref_clone.fetch_add(1, Ordering::SeqCst);
     println!("Main thread: {:?}", nref_clone.load(Ordering::Relaxed));
     // Really bad way to keep the main thread alive
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    // sender gets dropped after the hardcoded 'WAIT' at this point,
+    // throwing Error: receiving on a closed channel
+    // std::thread::sleep(std::time::Duration::from_secs(1));
+    pool.shutdown();
+    println!("Final value: {:?}", nref_clone.load(Ordering::Relaxed));
 }
 
 #[cfg(test)]
@@ -78,6 +104,9 @@ mod tests {
     #[test]
     fn it_works() {
         let pool = Threadpool::new(8);
-        pool.execute(|| println!("Hello from thread"));
+        pool.execute(|| {
+            println!("Hello from thread");
+            false
+        })
     }
 }
